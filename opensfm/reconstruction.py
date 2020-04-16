@@ -770,7 +770,7 @@ def reconstructed_points_for_images(tracks_manager, reconstruction, images):
     for image in images:
         if image not in reconstruction.shots:
             common_tracks = 0
-            for track in tracks_manager.get_observations_of_shot(image):
+            for track in tracks_manager.get_shot_observations(image):
                 if track in reconstruction.points:
                     common_tracks += 1
             res.append((image, common_tracks))
@@ -786,7 +786,7 @@ def resect(tracks_manager, graph_inliers, reconstruction, shot_id,
     """
 
     bs, Xs, ids = [], [], []
-    for track, obs in tracks_manager.get_observations_of_shot(shot_id).items():
+    for track, obs in tracks_manager.get_shot_observations(shot_id).items():
         if track in reconstruction.points:
             b = camera.pixel_bearing(obs.point)
             bs.append(b)
@@ -855,8 +855,8 @@ def compute_common_tracks(reconstruction1, reconstruction2,
     for image in common_images:
         if image not in all_shot_ids1 or image not in all_shot_ids2:
             continue
-        at_shot1 = tracks_manager1.get_observations_of_shot(image)
-        at_shot2 = tracks_manager2.get_observations_of_shot(image)
+        at_shot1 = tracks_manager1.get_shot_observations(image)
+        at_shot2 = tracks_manager2.get_shot_observations(image)
         for t1, t2 in corresponding_tracks(at_shot1, at_shot2):
             if t1 in reconstruction1.points and t2 in reconstruction2.points:
                 common_tracks.add((t1, t2))
@@ -882,8 +882,7 @@ def copy_graph_data(tracks_manager, graph_inliers, shot_id, track_id):
         graph_inliers.add_node(shot_id, bipartite=0)
     if track_id not in graph_inliers:
         graph_inliers.add_node(track_id, bipartite=1)
-    observation = tracks_manager.get_observations_of_point_at_shot([track_id], shot_id)
-    observation = observation[track_id]
+    observation = tracks_manager.get_observation(shot_id, track_id)
     graph_inliers.add_edge(shot_id, track_id,
                            feature=observation.point,
                            feature_scale=observation.scale,
@@ -909,7 +908,7 @@ class TrackTriangulator:
     def triangulate_robust(self, track, reproj_threshold, min_ray_angle_degrees):
         """Triangulate track in a RANSAC way and add point to reconstruction."""
         os, bs, ids = [], [], []
-        for shot_id, obs in self.tracks_manager.get_observations_of_point(track).items():
+        for shot_id, obs in self.tracks_manager.get_track_observations(track).items():
             if shot_id in self.reconstruction.shots:
                 shot = self.reconstruction.shots[shot_id]
                 os.append(self._shot_origin(shot))
@@ -970,7 +969,7 @@ class TrackTriangulator:
     def triangulate(self, track, reproj_threshold, min_ray_angle_degrees):
         """Triangulate track and add point to reconstruction."""
         os, bs, ids = [], [], []
-        for shot_id, obs in self.tracks_manager.get_observations_of_point(track).items():
+        for shot_id, obs in self.tracks_manager.get_track_observations(track).items():
             if shot_id in self.reconstruction.shots:
                 shot = self.reconstruction.shots[shot_id]
                 os.append(self._shot_origin(shot))
@@ -994,7 +993,7 @@ class TrackTriangulator:
     def triangulate_dlt(self, track, reproj_threshold, min_ray_angle_degrees):
         """Triangulate track using DLT and add point to reconstruction."""
         Rts, bs, ids = [], [], []
-        for shot_id, obs in self.tracks_manager.get_observations_of_point(track).items():
+        for shot_id, obs in self.tracks_manager.get_track_observations(track).items():
             if shot_id in self.reconstruction.shots:
                 shot = self.reconstruction.shots[shot_id]
                 Rts.append(self._shot_Rt(shot))
@@ -1048,7 +1047,7 @@ def triangulate_shot_features(tracks_manager, graph_inliers, reconstruction, sho
 
     triangulator = TrackTriangulator(tracks_manager, graph_inliers, reconstruction)
 
-    for track in tracks_manager.get_observations_of_shot(shot_id):
+    for track in tracks_manager.get_shot_observations(shot_id):
         if track not in reconstruction.points:
             triangulator.triangulate(track, reproj_threshold, min_ray_angle)
 
@@ -1071,7 +1070,7 @@ def retriangulate(tracks_manager, graph_inliers, reconstruction, config):
     tracks = set()
     for image in reconstruction.shots.keys():
         if image in all_shots_ids:
-            tracks.update(tracks_manager.get_observations_of_shot(image).keys())
+            tracks.update(tracks_manager.get_shot_observations(image).keys())
     for track in tracks:
         if config['triangulation_type'] == 'ROBUST':
             triangulator.triangulate_robust(track, threshold, min_ray_angle)
@@ -1216,7 +1215,7 @@ def merge_reconstructions(reconstructions, config):
 def paint_reconstruction(data, tracks_manager, reconstruction):
     """Set the color of the points from the color of the tracks."""
     for k, point in reconstruction.points.items():
-        point.color = map(float, next(iter(tracks_manager.get_observations_of_point(k).values())).color)
+        point.color = map(float, next(iter(tracks_manager.get_track_observations(k).values())).color)
 
 
 class ShouldBundle:
@@ -1383,15 +1382,15 @@ def incremental_reconstruction(data, tracks_manager):
     report = {}
     chrono = Chronometer()
 
-    tracks, images = tracking.tracks_and_images(tracks_manager)
-
+    images = tracks_manager.get_shot_ids()
+    
     if not data.reference_lla_exists():
         data.invent_reference_lla(images)
 
     remaining_images = set(images)
     camera_priors = data.load_camera_models()
     gcp = data.load_ground_control_points()
-    common_tracks = tracking.all_common_tracks(tracks_manager, tracks)
+    common_tracks = tracking.all_common_tracks(tracks_manager)
     reconstructions = []
     pairs = compute_image_pairs(common_tracks, camera_priors, data)
     chrono.lap('compute_image_pairs')
@@ -1401,7 +1400,7 @@ def incremental_reconstruction(data, tracks_manager):
         if im1 in remaining_images and im2 in remaining_images:
             rec_report = {}
             report['reconstructions'].append(rec_report)
-            tracks, p1, p2 = common_tracks[im1, im2]
+            _, p1, p2 = common_tracks[im1, im2]
             reconstruction, graph_inliers, rec_report['bootstrap'] = bootstrap_reconstruction(
                 data, tracks_manager, camera_priors, im1, im2, p1, p2)
 
