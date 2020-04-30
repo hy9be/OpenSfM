@@ -1,13 +1,43 @@
 import copy
 import logging
 import time
+from multiprocessing import Pool, Manager, cpu_count
+from functools import partial
 
 from opensfm import dataset
 from opensfm import exif
 
-
 logger = logging.getLogger(__name__)
 logging.getLogger("exifread").setLevel(logging.WARNING)
+
+# leverage multiple processor
+multiprocessing_manager = Manager()
+
+
+def extract_and_save_exif(image, data, exif_overrides, camera_models):
+    if data.exif_exists(image):
+        logging.info('Loading existing EXIF for {}'.format(image))
+        d = data.load_exif(image)
+    else:
+        logging.info('Extracting EXIF for {}'.format(image))
+
+        # EXIF data in Image
+        d = exif.extract_exif_from_file(data.open_image_file(image))
+
+        # Image Height and Image Width
+        if d['width'] <= 0 or not data.config['use_exif_size']:
+            d['height'], d['width'] = data.image_size(image)
+
+        d['camera'] = exif.camera_id(d)
+
+        if image in exif_overrides:
+            d.update(exif_overrides[image])
+
+        data.save_exif(image, d)
+
+    if d['camera'] not in camera_models:
+        camera = exif.camera_from_exif_metadata(d, data)
+        camera_models[d['camera']] = camera
 
 
 class Command:
@@ -21,27 +51,19 @@ class Command:
         start = time.time()
         data = dataset.DataSet(args.dataset)
 
-        exif_overrides = {}
+        exif_overrides = multiprocessing_manager.dict()
         if data.exif_overrides_exists():
             exif_overrides = data.load_exif_overrides()
 
-        camera_models = {}
-        for image in data.images():
-            if data.exif_exists(image):
-                logging.info('Loading existing EXIF for {}'.format(image))
-                d = data.load_exif(image)
-            else:
-                logging.info('Extracting EXIF for {}'.format(image))
-                d = self._extract_exif(image, data)
+        camera_models = multiprocessing_manager.dict()
 
-                if image in exif_overrides:
-                    d.update(exif_overrides[image])
+        pool = Pool(cpu_count())
 
-                data.save_exif(image, d)
+        partial_func = partial(extract_and_save_exif, data=data, exif_overrides=exif_overrides,
+                               camera_models=camera_models)
 
-            if d['camera'] not in camera_models:
-                camera = exif.camera_from_exif_metadata(d, data)
-                camera_models[d['camera']] = camera
+        # Process exif data in parallel
+        _ = pool.map(partial_func, [image for image in data.images()])
 
         # Override any camera specified in the camera models overrides file.
         if data.camera_models_overrides_exists():
@@ -58,15 +80,3 @@ class Command:
         end = time.time()
         with open(data.profile_log(), 'a') as fout:
             fout.write('extract_metadata: {0}\n'.format(end - start))
-
-    def _extract_exif(self, image, data):
-         # EXIF data in Image
-        d = exif.extract_exif_from_file(data.open_image_file(image))
-
-        # Image Height and Image Width
-        if d['width'] <= 0 or not data.config['use_exif_size']:
-            d['height'], d['width'] = data.image_size(image)
-
-        d['camera'] = exif.camera_id(d)
-
-        return d
